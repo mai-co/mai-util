@@ -1,0 +1,230 @@
+# Cloud Build configuration for building and publishing mai-util
+# This is triggered automatically when PRs are merged to main/master branch
+# and files in pagerduty_client/ are changed
+#
+# Setup:
+#   1. Go to Cloud Build Console → Triggers
+#   2. Create a trigger for this repository
+#   3. Set event: "Push to a branch"
+#   4. Set branch: "^main$" or "^master$"
+#   5. Set configuration: pagerduty_client/cloudbuild.yaml
+#   6. Set included files filter: "pagerduty_client/**"
+#
+# Each PR merge will automatically:
+#   - Build the package
+#   - Determine version from git tag or commit SHA
+#   - Publish to Artifact Registry
+
+steps:
+  # Resolve symlinks before building
+  - name: "python:3.12-slim"
+    id: "resolve-symlinks"
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        cd pagerduty_client
+
+        echo "Resolving symlinks before building..."
+
+        find . -type l -print0 | while IFS= read -r -d '' link; do
+          target=$$(readlink "$$link")
+
+          if [[ "$$target" != /* ]]; then
+            target=$$(readlink -f "$$(dirname "$$link")/$$target")
+          fi
+
+          echo "Resolving symlink: $$link -> $$target"
+
+          rm -f "$$link"
+          mkdir -p "$$(dirname "$$link")"
+
+          if [ -d "$$target" ]; then
+            cp -r "$$target" "$$link"
+          else
+            cp "$$target" "$$link"
+          fi
+        done
+
+        echo "✓ Symlinks resolved"
+    waitFor: ["-"]
+
+  # Build the library wheel
+  - name: "python:3.12-slim"
+    id: "build-library"
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        cd pagerduty_client
+        pip install --upgrade build wheel
+        rm -rf dist/ build/ *.egg-info
+        python -m build
+        echo "Build artifacts:"
+        ls -lh dist/
+    waitFor: ["resolve-symlinks"]
+
+  # Determine version (from git tag, commit SHA, or pyproject.toml)
+  - name: "python:3.12-slim"
+    id: "determine-version"
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        cd pagerduty_client
+
+        # Try to get version from git tag first
+        GIT_TAG=$$(git describe --tags --exact-match 2>/dev/null || echo "")
+
+        if [ -n "$$GIT_TAG" ]; then
+          VERSION=$$GIT_TAG
+          echo "Using version from git tag: $$VERSION"
+        else
+          # Use commit SHA as build metadata
+          BASE_VERSION=$$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/' | head -1)
+
+          if [ -z "$$BASE_VERSION" ]; then
+            BASE_VERSION="0.1.0"
+          fi
+
+          # Use Cloud Build's built-in SHORT_SHA substitution
+          if [ -n "$SHORT_SHA" ]; then
+            VERSION="$${BASE_VERSION}+$${SHORT_SHA}"
+            echo "Using version with commit SHA: $$VERSION"
+          else
+            SHORT_SHA=$$(git rev-parse --short=8 HEAD 2>/dev/null || echo "")
+            if [ -n "$$SHORT_SHA" ]; then
+              VERSION="$${BASE_VERSION}+$${SHORT_SHA}"
+              echo "Using version with git commit SHA: $$VERSION"
+            else
+              VERSION=$$BASE_VERSION
+              echo "WARNING: Could not determine commit SHA, using base version: $$VERSION"
+            fi
+          fi
+        fi
+
+        # Validate version
+        if [ -z "$$VERSION" ] || [ "$$VERSION" = "+" ] || echo "$$VERSION" | grep -qE '^[^+]+\+$$'; then
+          echo "ERROR: Invalid version '$$VERSION', using fallback"
+          VERSION="0.1.0"
+        fi
+
+        # Update version in pyproject.toml
+        sed -i "s/^version = \".*\"/version = \"$$VERSION\"/" pyproject.toml
+
+        # Update __init__.py if it has __version__
+        if grep -q '__version__' mai_util/__init__.py; then
+          sed -i "s/^__version__ = \".*\"/__version__ = \"$$VERSION\"/" mai_util/__init__.py
+        fi
+
+        echo "VERSION=$$VERSION" >> /workspace/version.env
+        echo "Final version: $$VERSION"
+        cat pyproject.toml | grep version
+    env:
+      - "GOOGLE_CLOUD_PROJECT=$PROJECT_ID"
+      - "SHORT_SHA=$SHORT_SHA"
+    waitFor: ["build-library"]
+
+  # Rebuild with the new version
+  - name: "python:3.12-slim"
+    id: "rebuild-with-version"
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+        cd pagerduty_client
+
+        source /workspace/version.env
+        pip install --upgrade build wheel
+        rm -rf dist/ build/ *.egg-info
+        python -m build
+        echo "Build complete with version: $$VERSION"
+        ls -lh dist/
+    waitFor: ["determine-version"]
+
+  # Publish to Google Artifact Registry
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+    id: "publish-to-artifact-registry"
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        set -euo pipefail
+
+        source /workspace/version.env
+        echo "Publishing version: $$VERSION"
+
+        if [ ! -d "/workspace/pagerduty_client/dist" ] || [ -z "$$(ls -A /workspace/pagerduty_client/dist 2>/dev/null)" ]; then
+          echo "ERROR: dist/ directory is empty or doesn't exist!"
+          ls -la /workspace/ || true
+          exit 1
+        fi
+
+        echo "Found files in dist/:"
+        ls -lh /workspace/pagerduty_client/dist/
+
+        apt-get update -qq && apt-get install -y -qq python3-venv
+        python3 -m venv /tmp/venv
+        source /tmp/venv/bin/activate
+        pip install --upgrade pip twine keyring keyrings.google-artifactregistry-auth
+
+        # Base repo URL for TWINE (NO /simple/)
+        AR_BASE_URL="https://us-central1-python.pkg.dev/$PROJECT_ID/mai-python-repo/"
+        echo "Uploading to: $$AR_BASE_URL"
+
+        # Run upload; if it fails only because files already exist, continue
+        set +e
+        python -m twine upload --repository-url "$$AR_BASE_URL" /workspace/pagerduty_client/dist/* --verbose 2>&1 | tee /tmp/twine.log
+        TWINE_STATUS=$${PIPESTATUS[0]}
+        set -e
+
+        if [ "$$TWINE_STATUS" -ne 0 ]; then
+          if grep -qiE '409|already exists|conflict' /tmp/twine.log; then
+            echo "Artifacts already exist in Artifact Registry; proceeding without failure."
+          else
+            echo "Twine upload failed with non-409 error."
+            exit "$$TWINE_STATUS"
+          fi
+        fi
+
+        echo "Successfully published (or already present) mai-util $$VERSION"
+        AR_SIMPLE_URL="$${AR_BASE_URL}simple/"
+        echo "Install with:"
+        echo "  pip install mai-util==$$VERSION --extra-index-url $$AR_SIMPLE_URL"
+
+        echo "$$VERSION" > /workspace/library-version.txt
+    env:
+      - "GOOGLE_CLOUD_PROJECT=$PROJECT_ID"
+    waitFor: ["rebuild-with-version"]
+
+  # Output the version for downstream steps
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+    id: "output-version"
+    entrypoint: "bash"
+    args:
+      - -c
+      - |
+        source /workspace/version.env
+        echo "LIBRARY_VERSION=$$VERSION" >> /workspace/env.txt
+        cat /workspace/library-version.txt
+        echo "Build and publish completed successfully!"
+    waitFor: ["publish-to-artifact-registry"]
+
+timeout: 600s
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: "E2_HIGHCPU_8"
+
+# Note: Make sure your Cloud Build service account has:
+# - Artifact Registry Writer role
+# - Access to the mai-python-repo repository
+#
+# To set up automatic triggers:
+# 1. Go to Cloud Build Console
+# 2. Create a trigger for this repository
+# 3. Set the configuration file to: pagerduty_client/cloudbuild.yaml
+# 4. Set included files filter: "pagerduty_client/**"
+# 5. Configure trigger to run on push to main/master branch
