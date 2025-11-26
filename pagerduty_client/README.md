@@ -7,7 +7,7 @@ This module provides a PagerDuty client for sending events via Events API v2.
 Install from Artifact Registry:
 
 ```bash
-pip install mai-util --extra-index-url https://us-central1-python.pkg.dev/mai-project-a26f/mai-python-repo/simple/
+pip install pagerduty-client --extra-index-url https://us-central1-python.pkg.dev/mai-project-a26f/mai-python-repo/simple/
 ```
 
 ## Usage

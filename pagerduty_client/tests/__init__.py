@@ -1,1 +1,1 @@
-"""Tests for mai-util pagerduty_client."""
+"""Tests for pagerduty-client."""
