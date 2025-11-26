@@ -1,4 +1,4 @@
-# Cloud Build configuration for building and publishing mai-util
+# Cloud Build configuration for building and publishing pagerduty-client
 # This is triggered automatically when PRs are merged to main/master branch
 # and files in pagerduty_client/ are changed
 #
@@ -190,10 +190,10 @@ steps:
           fi
         fi
 
-        echo "Successfully published (or already present) mai-util $$VERSION"
+        echo "Successfully published (or already present) pagerduty-client $$VERSION"
         AR_SIMPLE_URL="$${AR_BASE_URL}simple/"
         echo "Install with:"
-        echo "  pip install mai-util==$$VERSION --extra-index-url $$AR_SIMPLE_URL"
+        echo "  pip install pagerduty-client==$$VERSION --extra-index-url $$AR_SIMPLE_URL"
 
         echo "$$VERSION" > /workspace/library-version.txt
     env:

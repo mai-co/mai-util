@@ -1,12 +1,12 @@
 #!/bin/bash
-# Build script for mai-util
+# Build script for pagerduty-client
 # Usage: ./scripts/build.sh
 
 set -e
 
 cd "$(dirname "$0")/.."
 
-echo "Building mai-util package..."
+echo "Building pagerduty-client package..."
 
 # Install build tools
 pip install --upgrade build wheel

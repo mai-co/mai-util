@@ -1,5 +1,5 @@
 #!/bin/bash
-# Publish script for mai-util to Google Artifact Registry
+# Publish script for pagerduty-client to Google Artifact Registry
 # Usage: ./scripts/publish.sh [VERSION]
 # If VERSION is not provided, it will use the version from pyproject.toml
 
@@ -9,7 +9,7 @@ set -e
 PROJECT_ID="${GOOGLE_CLOUD_PROJECT:-mai-project-a26f}"
 LOCATION="us-central1"
 REPOSITORY="mai-python-repo"
-PACKAGE_NAME="mai-util"
+PACKAGE_NAME="pagerduty-client"
 
 # Get the version
 if [ -n "$1" ]; then
